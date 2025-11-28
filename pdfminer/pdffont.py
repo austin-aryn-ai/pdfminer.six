@@ -5,6 +5,7 @@ from io import BytesIO
 from typing import (Any, BinaryIO, Dict, Iterable, Iterator, List, Mapping,
                     Optional, Tuple, Union, cast, TYPE_CHECKING)
 
+from pdfminer.casting import safe_float
 from . import settings
 from .cmapdb import CMap
 from .cmapdb import IdentityUnicodeMap
@@ -43,25 +44,35 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
-def get_widths(seq: Iterable[object]) -> Dict[int, float]:
+def get_widths(seq: Iterable[object]) -> Dict[Union[str, int], float]:
     """Build a mapping of character widths for horizontal writing."""
     widths: Dict[int, float] = {}
     r: List[float] = []
     for v in seq:
+        v = resolve1(v)
         if isinstance(v, list):
             if r:
                 char1 = r[-1]
-                for (i, w) in enumerate(v):
+                for i, w in enumerate(v):
                     widths[cast(int, char1) + i] = w
                 r = []
         elif isinstance(v, (int, float)):  # == utils.isnumber(v)
             r.append(v)
             if len(r) == 3:
                 (char1, char2, w) = r
-                for i in range(cast(int, char1), cast(int, char2) + 1):
-                    widths[i] = w
+                if isinstance(char1, int) and isinstance(char2, int):
+                    for i in range(cast(int, char1), cast(int, char2) + 1):
+                        widths[i] = w
+                else:
+                    log.warning(
+                        f"Skipping invalid font width specification for {char1} to {char2} because either of them is not an int"
+                    )
                 r = []
-    return widths
+        else:
+            log.warning(
+                f"Skipping invalid font width specification for {v} because it is not a number or a list"
+            )
+    return cast(Dict[Union[str, int], float], widths)
 
 
 def get_widths2(seq: Iterable[object]) -> Dict[int, Tuple[float, Point]]:
@@ -437,7 +448,12 @@ class TrueTypeFont:
                 cast(Tuple[int, int, int], struct.unpack('>HHL', fp.read(8))))
         char2gid: Dict[int, int] = {}
         # Only supports subtable type 0, 2 and 4.
-        for (_1, _2, st_offset) in subtables:
+        #for (_1, _2, st_offset) in subtables:
+        for (platform_id, encoding_id, st_offset) in subtables:
+            # Skip non-Unicode cmaps.
+            # https://docs.microsoft.com/en-us/typography/opentype/spec/cmap
+            if not (platform_id == 0 or (platform_id == 3 and encoding_id in [1, 10])):
+                continue
             fp.seek(base_offset+st_offset)
             (fmttype, fmtlen, fmtlang) = \
                 cast(Tuple[int, int, int], struct.unpack('>HHH', fp.read(6)))
@@ -501,6 +517,10 @@ class TrueTypeFont:
                             char2gid[c] = (c + idd) & 0xffff
             else:
                 assert False, str(('Unhandled', fmttype))
+
+        if not char2gid:
+            raise TrueTypeFont.CMapNotFound
+
         # create unicode map
         unicode_map = FileUnicodeMap()
         for (char, gid) in char2gid.items():
@@ -590,7 +610,7 @@ class PDFFont:
             h = self.ascent - self.descent
         return h * self.vscale
 
-    def char_width(self, cid: int) -> float:
+    def char_width_old(self, cid: int) -> float:
         # Because character widths may be mapping either IDs or strings,
         # we try to lookup the character ID first, then its str equivalent.
         try:
@@ -601,6 +621,24 @@ class PDFFont:
                 return str_widths[self.to_unichr(cid)] * self.hscale
             except (KeyError, PDFUnicodeNotDefined):
                 return self.default_width * self.hscale
+
+    def char_width(self, cid: int) -> float:
+        # Because character widths may be mapping either IDs or strings,
+        # we try to lookup the character ID first, then its str equivalent.
+        cid_width = safe_float(self.widths.get(cid))
+        if cid_width is not None:
+            return cid_width * self.hscale
+
+        try:
+            str_cid = self.to_unichr(cid)
+            cid_width = safe_float(self.widths.get(str_cid))
+            if cid_width is not None:
+                return cid_width * self.hscale
+
+        except PDFUnicodeNotDefined:
+            pass
+
+        return self.default_width * self.hscale
 
     def char_disp(
         self,

@@ -192,7 +192,7 @@ class FileCMap(CMap):
 
 class FileUnicodeMap(UnicodeMap):
 
-    def add_cid2unichr(self, cid: int, code: Union[PSLiteral, bytes, int]
+    def add_cid2unichr_old(self, cid: int, code: Union[PSLiteral, bytes, int]
                        ) -> None:
         assert isinstance(cid, int), str(type(cid))
         if isinstance(code, PSLiteral):
@@ -207,6 +207,28 @@ class FileUnicodeMap(UnicodeMap):
         else:
             raise TypeError(code)
         return
+
+    def add_cid2unichr(self, cid: int, code: Union[PSLiteral, bytes, int]) -> None:
+        assert isinstance(cid, int), str(type(cid))
+        if isinstance(code, PSLiteral):
+            # Interpret as an Adobe glyph name.
+            assert isinstance(code.name, str)
+            self.cid2unichr[cid] = name2unicode(code.name)
+            unichr = name2unicode(code.name)
+        elif isinstance(code, bytes):
+            # Interpret as UTF-16BE.
+            self.cid2unichr[cid] = code.decode("UTF-16BE", "ignore")
+            unichr = code.decode("UTF-16BE", "ignore")
+        elif isinstance(code, int):
+            self.cid2unichr[cid] = chr(code)
+            unichr = chr(code)
+        else:
+            raise TypeError(code)
+
+        # A0 = non-breaking space, some weird fonts can have a collision on a cid here.
+        if unichr == "\u00A0" and self.cid2unichr.get(cid) == " ":
+            return
+        self.cid2unichr[cid] = unichr
 
 
 class PyCMap(CMap):
