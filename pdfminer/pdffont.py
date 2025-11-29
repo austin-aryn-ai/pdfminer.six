@@ -551,7 +551,7 @@ class TrueTypeFont:
     def parse_cmap_format_12(self, fp, char2gid):
         """Parse cmap subtable format 12"""
         rsv, fmtlen, fmtlang = struct.unpack('>HII', fp.read(10))
-        numgroups = struct.unpack('>I', fp.read(4))
+        numgroups = struct.unpack('>I', fp.read(4))[0]
         for i in range(numgroups):
             sc, ec, sgid = struct.unpack('>III', fp.read(12))
             for code in range(sc, ec + 1):
